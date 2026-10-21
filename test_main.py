@@ -1,4 +1,7 @@
 
+from datetime import datetime, timezone
+from uuid import UUID
+
 from fastapi.testclient import TestClient
 
 from main import app
@@ -19,6 +22,33 @@ def test_valid_request_is_accepted():
     assert data["created_at"]
     assert data["status"] == "accepted"
     assert data["input_text"] == "The Earth orbits the Sun."
+
+
+def test_request_id_is_valid_uuid():
+    response = client.post(
+        "/api/v1/verify",
+        json={"input_text": "Test statement."},
+    )
+
+    assert response.status_code == 202
+    request_id = response.json()["request_id"]
+
+    # Raises ValueError if the ID is not a valid UUID.
+    parsed_id = UUID(request_id)
+    assert str(parsed_id) == request_id
+
+
+def test_created_at_is_utc():
+    response = client.post(
+        "/api/v1/verify",
+        json={"input_text": "Test statement."},
+    )
+
+    assert response.status_code == 202
+    created_at = datetime.fromisoformat(response.json()["created_at"])
+
+    assert created_at.tzinfo is not None
+    assert created_at.utcoffset() == timezone.utc.utcoffset(created_at)
 
 
 def test_missing_input_text_is_rejected():
