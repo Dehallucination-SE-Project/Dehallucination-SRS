@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -11,6 +10,19 @@ app = FastAPI(
     description="API foundation for the Dehallucination project",
     version="0.1.0",
 )
+
+
+@app.get("/api/v1/health")
+def health_check():
+    """Report the API's health and configured dependency status."""
+    return {
+        "status": "ok",
+        "service": "dehallucination-api",
+        "version": app.version,
+        "dependencies": {
+            "evidence_sources": "not_configured"
+        },
+    }
 
 
 class VerifyRequest(BaseModel):

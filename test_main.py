@@ -79,3 +79,24 @@ def test_each_request_gets_a_unique_id():
     assert first.status_code == 202
     assert second.status_code == 202
     assert first.json()["request_id"] != second.json()["request_id"]
+
+
+def test_health_endpoint_returns_service_status():
+    response = client.get("/api/v1/health")
+
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["service"] == "dehallucination-api"
+    assert data["version"] == "0.1.0"
+
+
+def test_health_endpoint_reports_dependency_status():
+    response = client.get("/api/v1/health")
+
+    assert response.status_code == 200
+
+    dependencies = response.json()["dependencies"]
+    assert "evidence_sources" in dependencies
+    assert dependencies["evidence_sources"] == "not_configured"
