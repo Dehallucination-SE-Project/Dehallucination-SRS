@@ -100,3 +100,25 @@ def test_health_endpoint_reports_dependency_status():
     dependencies = response.json()["dependencies"]
     assert "evidence_sources" in dependencies
     assert dependencies["evidence_sources"] == "not_configured"
+
+
+def test_evidence_retrieval_returns_503_when_source_unavailable():
+    response = client.post(
+        "/api/v1/evidence/retrieve",
+        json={"query": "What is the capital of France?"},
+    )
+
+    assert response.status_code == 503
+
+
+
+
+def test_evidence_retrieval_explains_unavailable_source():
+    response = client.post(
+        "/api/v1/evidence/retrieve",
+        json={"query": "What is the capital of France?"},
+    )
+
+    assert response.status_code == 503
+    assert "not configured or is unavailable" in response.json()["detail"]
+
