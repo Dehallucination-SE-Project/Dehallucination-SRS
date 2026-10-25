@@ -1,5 +1,7 @@
 
-from claim_extraction import extract_claims
+import pytest
+
+from claim_extraction import extract_claims, normalize_claim
 
 
 def test_extracts_two_sentences():
@@ -38,8 +40,28 @@ def test_unicode_text():
 
 
 def test_non_string_input_raises_type_error():
-    try:
+    with pytest.raises(TypeError):
         extract_claims(None)
-        assert False, "Expected TypeError"
-    except TypeError:
-        pass
+
+
+def test_normalize_claim_collapses_whitespace():
+    assert normalize_claim("  The   Earth   orbits the Sun.  ") == (
+        "The Earth orbits the Sun."
+    )
+
+
+def test_original_text_is_preserved():
+    original = "The   Earth   orbits the Sun."
+    result = extract_claims(original)
+
+    assert result[0]["text"] == original
+    assert result[0]["normalized_text"] == "The Earth orbits the Sun."
+
+
+def test_normalization_preserves_punctuation():
+    assert normalize_claim("Is it true?  Yes!") == "Is it true? Yes!"
+
+
+def test_normalize_claim_rejects_non_string():
+    with pytest.raises(TypeError):
+        normalize_claim(None)
