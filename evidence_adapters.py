@@ -4,8 +4,11 @@
 The local adapter is suitable for development and testing. It searches
 a supplied collection of evidence items; it does not access the internet
 or an external knowledge graph.
+
+Retrieved evidence includes source_id, label, and retrieved_at metadata.
 """
 
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 
@@ -24,12 +27,46 @@ class EvidenceSource(Protocol):
         ...
 
 
+def _validate_query(query: str) -> None:
+    """Reject queries that are not usable."""
+    if not isinstance(query, str):
+        raise TypeError("query must be a string")
+
+    if not query.strip():
+        raise ValueError("query must not be blank")
+
+
+def _add_evidence_metadata(
+    item: EvidenceItem,
+    source_id: str,
+    label: str,
+    retrieved_at: datetime,
+) -> EvidenceItem:
+    """Return a copy of an evidence item with retrieval metadata."""
+    result = dict(item)
+    result["source_id"] = source_id
+    result["label"] = label
+    result["retrieved_at"] = retrieved_at.isoformat()
+    return result
+
+
 class LocalEvidenceAdapter:
     """Retrieve matching evidence from a local collection."""
 
-    def __init__(self, evidence_items: list[EvidenceItem]) -> None:
+    def __init__(
+        self,
+        evidence_items: list[EvidenceItem],
+        source_id: str = "local",
+        label: str = "Local evidence",
+    ) -> None:
         if not isinstance(evidence_items, list):
             raise TypeError("evidence_items must be a list")
+
+        if not isinstance(source_id, str) or not source_id.strip():
+            raise ValueError("source_id must be a non-empty string")
+
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError("label must be a non-empty string")
 
         for item in evidence_items:
             if not isinstance(item, dict):
@@ -41,16 +78,14 @@ class LocalEvidenceAdapter:
                     "each evidence item must contain non-empty text"
                 )
 
-        # Keep copies so external changes do not modify stored evidence.
+        # Copy items so external changes do not modify stored evidence.
         self._evidence_items = [dict(item) for item in evidence_items]
+        self.source_id = source_id.strip()
+        self.label = label.strip()
 
     def retrieve(self, query: str) -> list[EvidenceItem]:
-        """Return items whose text shares a word with the query."""
-        if not isinstance(query, str):
-            raise TypeError("query must be a string")
-
-        if not query.strip():
-            raise ValueError("query must not be blank")
+        """Return matching items with source and retrieval metadata."""
+        _validate_query(query)
 
         query_words = set(query.casefold().split())
         matches = []
@@ -59,9 +94,20 @@ class LocalEvidenceAdapter:
             evidence_words = set(item["text"].casefold().split())
 
             if query_words.intersection(evidence_words):
-                matches.append(dict(item))
+                matches.append(item)
 
-        return matches
+        # Use one UTC timestamp for this retrieval operation.
+        retrieved_at = datetime.now(timezone.utc)
+
+        return [
+            _add_evidence_metadata(
+                item,
+                source_id=self.source_id,
+                label=self.label,
+                retrieved_at=retrieved_at,
+            )
+            for item in matches
+        ]
 
 
 class UnavailableEvidenceAdapter:
@@ -72,11 +118,7 @@ class UnavailableEvidenceAdapter:
 
     def retrieve(self, query: str) -> list[EvidenceItem]:
         """Raise an explicit error instead of pretending retrieval worked."""
-        if not isinstance(query, str):
-            raise TypeError("query must be a string")
-
-        if not query.strip():
-            raise ValueError("query must not be blank")
+        _validate_query(query)
 
         raise EvidenceSourceUnavailableError(
             f"{self.source_name} is not configured or is unavailable"

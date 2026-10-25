@@ -1,4 +1,6 @@
 
+from datetime import datetime, timezone
+
 import pytest
 
 from evidence_adapters import (
@@ -68,3 +70,45 @@ def test_unavailable_source_rejects_blank_query():
 
     with pytest.raises(ValueError, match="query must not be blank"):
         adapter.retrieve(" ")
+
+
+def test_retrieved_evidence_contains_metadata():
+    adapter = LocalEvidenceAdapter(
+        [{"text": "The Earth orbits the Sun."}],
+        source_id="test-source-01",
+        label="Astronomy",
+    )
+
+    results = adapter.retrieve("Earth orbits")
+
+    assert len(results) == 1
+    item = results[0]
+
+    assert item["source_id"] == "test-source-01"
+    assert item["label"] == "Astronomy"
+
+    timestamp = datetime.fromisoformat(item["retrieved_at"])
+    assert timestamp.tzinfo is not None
+    assert timestamp.utcoffset() == timezone.utc.utcoffset(timestamp)
+
+
+def test_metadata_does_not_modify_original_evidence():
+    original = {"text": "The Earth orbits the Sun."}
+    adapter = LocalEvidenceAdapter([original])
+
+    results = adapter.retrieve("Earth")
+
+    assert "source_id" not in original
+    assert "label" not in original
+    assert "retrieved_at" not in original
+    assert "source_id" in results[0]
+
+
+def test_metadata_configuration_rejects_blank_source_id():
+    with pytest.raises(ValueError, match="source_id must be a non-empty string"):
+        LocalEvidenceAdapter([], source_id=" ")
+
+
+def test_metadata_configuration_rejects_blank_label():
+    with pytest.raises(ValueError, match="label must be a non-empty string"):
+        LocalEvidenceAdapter([], label=" ")
