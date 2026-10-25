@@ -1,8 +1,16 @@
+
 from datetime import datetime, timezone
 from uuid import uuid4
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
+
+from evidence_adapters import (
+    EvidenceSource,
+    EvidenceSourceUnavailableError,
+    UnavailableEvidenceAdapter,
+)
 
 
 app = FastAPI(
@@ -11,10 +19,30 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# No real external evidence source is configured by default.
+# Tests or future configuration can supply a different adapter.
+evidence_source: EvidenceSource = UnavailableEvidenceAdapter()
+
+
+class EvidenceRetrieveRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be blank")
+        return value
+
+
+class EvidenceRetrieveResponse(BaseModel):
+    query: str
+    evidence: list[dict[str, Any]]
+
 
 @app.get("/api/v1/health")
 def health_check():
-    """Report the API's health and configured dependency status."""
+    """Report API health and external evidence-source configuration."""
     return {
         "status": "ok",
         "service": "dehallucination-api",
@@ -52,8 +80,29 @@ def root():
     return {"message": "Dehallucination API is running"}
 
 
+@app.post(
+    "/api/v1/evidence/retrieve",
+    response_model=EvidenceRetrieveResponse,
+)
+def retrieve_evidence(request: EvidenceRetrieveRequest):
+    """Retrieve evidence through the configured evidence adapter."""
+    try:
+        results = evidence_source.retrieve(request.query)
+    except EvidenceSourceUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+    return EvidenceRetrieveResponse(
+        query=request.query,
+        evidence=results,
+    )
+
+
 @app.post("/api/v1/verify", response_model=VerifyResponse, status_code=202)
 def verify_request(request: VerifyRequest):
+    """Accept a verification request without claiming a verdict."""
     return VerifyResponse(
         request_id=str(uuid4()),
         created_at=datetime.now(timezone.utc),
