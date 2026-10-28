@@ -130,3 +130,101 @@ def test_blank_claim_text_is_rejected():
         generate_grounded_response([
             {"claim_id": "C-001", "text": " ", "verdict": "Supported"}
         ])
+
+def test_uncertain_claim_produces_warning():
+    result = generate_grounded_response([
+        {
+            "claim_id": "C-001",
+            "text": "The treatment may work.",
+            "verdict": "Uncertain",
+        }
+    ])
+
+    assert len(result["warnings"]) == 1
+    assert result["warnings"][0]["claim_id"] == "C-001"
+    assert result["warnings"][0]["verdict"] == "Uncertain"
+    assert "uncertain" in result["warnings"][0]["warning"].lower()
+    assert result["included_claim_ids"] == []
+
+
+def test_unverifiable_claim_produces_warning():
+    result = generate_grounded_response([
+        {
+            "claim_id": "C-002",
+            "text": "An unknown planet orbits Earth.",
+            "verdict": "Unverifiable",
+        }
+    ])
+
+    assert len(result["warnings"]) == 1
+    assert result["warnings"][0]["verdict"] == "Unverifiable"
+    assert "could not be verified" in result["warnings"][0]["warning"]
+
+
+def test_contradicted_claim_produces_warning():
+    result = generate_grounded_response([
+        {
+            "claim_id": "C-003",
+            "text": "The Sun orbits the Earth.",
+            "verdict": "Contradicted",
+        }
+    ])
+
+    assert len(result["warnings"]) == 1
+    assert result["warnings"][0]["verdict"] == "Contradicted"
+    assert "contradicts" in result["warnings"][0]["warning"].lower()
+
+
+def test_supported_claim_has_no_uncertainty_warning():
+    result = generate_grounded_response([
+        {
+            "claim_id": "C-004",
+            "text": "The Earth orbits the Sun.",
+            "verdict": "Supported",
+        }
+    ])
+
+    assert result["warnings"] == []
+    assert result["included_claim_ids"] == ["C-004"]
+
+
+def test_mixed_claims_warn_only_for_excluded_claims():
+    result = generate_grounded_response([
+        {
+            "claim_id": "C-001",
+            "text": "The Earth orbits the Sun.",
+            "verdict": "Supported",
+        },
+        {
+            "claim_id": "C-002",
+            "text": "An unverified claim.",
+            "verdict": "Unverifiable",
+        },
+        {
+            "claim_id": "C-003",
+            "text": "A conflicting claim.",
+            "verdict": "Uncertain",
+        },
+    ])
+
+    assert result["included_claim_ids"] == ["C-001"]
+    assert len(result["warnings"]) == 2
+    assert {
+        warning["claim_id"] for warning in result["warnings"]
+    } == {"C-002", "C-003"}
+
+
+def test_disabled_mode_returns_no_warnings():
+    result = generate_grounded_response(
+        [
+            {
+                "claim_id": "C-001",
+                "text": "An unverified claim.",
+                "verdict": "Unverifiable",
+            }
+        ],
+        enabled=False,
+    )
+
+    assert result["enabled"] is False
+    assert result["warnings"] == []

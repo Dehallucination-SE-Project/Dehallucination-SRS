@@ -1,12 +1,13 @@
 
 """Conservative evidence-grounded response generation.
 
-This baseline uses verdicts and evidence supplied by the existing
-verification pipeline. It does not independently establish factual truth
-or generate unsupported replacement facts.
+Only claims marked Supported are included in the grounded response.
+Other claims receive explicit warnings and are not presented as verified.
 """
-from evidence_citations import build_evidence_citations
+
 from typing import Any
+
+from evidence_citations import build_evidence_citations
 
 
 VALID_VERDICTS = {
@@ -16,16 +17,18 @@ VALID_VERDICTS = {
     "Unverifiable",
 }
 
+UNCERTAINTY_WARNINGS = {
+    "Contradicted": "Warning: evidence contradicts this claim.",
+    "Uncertain": "Warning: evidence is conflicting; this claim is uncertain.",
+    "Unverifiable": "Warning: this claim could not be verified from available evidence.",
+}
+
 
 def generate_grounded_response(
     claims: list[dict[str, Any]],
     enabled: bool = True,
 ) -> dict[str, Any]:
-    """Build a response using only claims marked Supported.
-
-    Claims with other verdicts are reported separately rather than
-    rewritten using facts that have not been established by evidence.
-    """
+    """Build a response from supported claims and warn about other claims."""
     if not isinstance(claims, list):
         raise TypeError("claims must be a list")
 
@@ -69,13 +72,14 @@ def generate_grounded_response(
             ],
             "excluded_claims": [],
             "citations": [],
+            "warnings": [],
             "message": "Grounded response generation is disabled.",
         }
 
-    
     included_claims = []
     excluded_claims = []
     supported_claims_for_citations = []
+    warnings = []
 
     for index, claim in enumerate(claims, start=1):
         claim_id = claim.get("claim_id", f"C-{index:03d}")
@@ -86,13 +90,20 @@ def generate_grounded_response(
         verdict = claim["verdict"]
 
         if verdict != "Supported":
+            warning = UNCERTAINTY_WARNINGS[verdict]
+
             excluded_claims.append({
                 "claim_id": claim_id,
                 "text": text,
                 "verdict": verdict,
-                "reason": (
-                    "Claim excluded because it is not marked Supported."
-                ),
+                "reason": warning,
+            })
+
+            warnings.append({
+                "claim_id": claim_id,
+                "verdict": verdict,
+                "text": text,
+                "warning": warning,
             })
             continue
 
@@ -101,18 +112,15 @@ def generate_grounded_response(
             "text": text,
         })
 
-        # Pass only supported claims to the citation module.
         supported_claim = dict(claim)
         supported_claim["claim_id"] = claim_id
         supported_claims_for_citations.append(supported_claim)
 
-    # The helper returns citations grouped by claim.
     grouped_citations = build_evidence_citations(
         supported_claims_for_citations
     )
 
-    # Preserve the existing flat response format and remove duplicates
-    # across different claims as well.
+    # Preserve the existing flat citation response format.
     citations = []
     seen_citations = set()
 
@@ -128,7 +136,6 @@ def generate_grounded_response(
 
             seen_citations.add(key)
             citations.append(citation)
-
 
     if included_claims:
         response_text = " ".join(
@@ -149,6 +156,12 @@ def generate_grounded_response(
             "were invented."
         )
 
+    if warnings:
+        message += (
+            f" {len(warnings)} claim(s) require caution because they "
+            "were contradicted, uncertain, or unverifiable."
+        )
+
     return {
         "enabled": True,
         "grounded_response": response_text,
@@ -157,5 +170,6 @@ def generate_grounded_response(
         ],
         "excluded_claims": excluded_claims,
         "citations": citations,
+        "warnings": warnings,
         "message": message,
     }
