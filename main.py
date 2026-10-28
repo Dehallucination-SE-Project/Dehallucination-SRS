@@ -1,4 +1,4 @@
-
+from audit_trail import AuditTrail
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any
@@ -22,7 +22,7 @@ app = FastAPI(
 # No real external evidence source is configured by default.
 # Tests or future configuration can supply a different adapter.
 evidence_source: EvidenceSource = UnavailableEvidenceAdapter()
-
+audit_trail = AuditTrail()
 
 class EvidenceRetrieveRequest(BaseModel):
     query: str = Field(min_length=1, max_length=10000)
@@ -100,12 +100,25 @@ def retrieve_evidence(request: EvidenceRetrieveRequest):
     )
 
 
+
 @app.post("/api/v1/verify", response_model=VerifyResponse, status_code=202)
 def verify_request(request: VerifyRequest):
-    """Accept a verification request without claiming a verdict."""
+    """Accept a verification request and record its audit event."""
+    request_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
+
+    audit_trail.record_request_accepted(
+        request_id=request_id,
+        details={
+            "input_length": len(request.input_text),
+            "verification_mode": request.verification_mode,
+            "domain": request.domain,
+        },
+    )
+
     return VerifyResponse(
-        request_id=str(uuid4()),
-        created_at=datetime.now(timezone.utc),
+        request_id=request_id,
+        created_at=created_at,
         status="accepted",
         input_text=request.input_text,
     )
