@@ -10,24 +10,15 @@ VALID_VERDICTS = {
     "Unverifiable",
 }
 
+# Number of consistent, usable evidence items needed to reach
+# the maximum baseline confidence score.
+CONFIDENCE_EVIDENCE_TARGET = 3
 
-def assign_verdict(evidence: list[dict[str, Any]]) -> str:
-    """
-    Assign a verdict from explicit evidence assessments.
 
-    Each evidence item must contain an assessment:
-      - supports
-      - contradicts
-      - insufficient
-
-    Evidence marked insufficient does not count as support or contradiction.
-    No usable evidence results in Unverifiable.
-    """
+def _validate_evidence(evidence: list[dict[str, Any]]) -> list[str]:
+    """Validate evidence items and return their assessments."""
     if not isinstance(evidence, list):
         raise TypeError("evidence must be a list")
-
-    if not evidence:
-        return "Unverifiable"
 
     assessments = []
 
@@ -44,6 +35,21 @@ def assign_verdict(evidence: list[dict[str, Any]]) -> str:
 
         assessments.append(assessment)
 
+    return assessments
+
+
+def assign_verdict(evidence: list[dict[str, Any]]) -> str:
+    """
+    Assign a verdict from explicit evidence assessments.
+
+    Evidence marked insufficient does not count as support or
+    contradiction. Conflicting usable evidence produces Uncertain.
+    """
+    assessments = _validate_evidence(evidence)
+
+    if not assessments:
+        return "Unverifiable"
+
     has_support = "supports" in assessments
     has_contradiction = "contradicts" in assessments
 
@@ -59,11 +65,44 @@ def assign_verdict(evidence: list[dict[str, Any]]) -> str:
     return "Unverifiable"
 
 
+def calculate_confidence_score(
+    evidence: list[dict[str, Any]],
+) -> float:
+    """
+    Calculate a deterministic baseline confidence score from 0.0 to 1.0.
+
+    The score reflects the amount and consistency of usable evidence.
+    It is not a calibrated probability that a claim is true.
+
+    - No usable evidence: 0.0
+    - More consistent usable evidence: higher score
+    - Mixed supporting and contradicting evidence: lower score
+    - Insufficient evidence does not increase the score
+    """
+    assessments = _validate_evidence(evidence)
+
+    supports = assessments.count("supports")
+    contradicts = assessments.count("contradicts")
+    usable_count = supports + contradicts
+
+    if usable_count == 0:
+        return 0.0
+
+    consistency = max(supports, contradicts) / usable_count
+    evidence_coverage = min(
+        usable_count / CONFIDENCE_EVIDENCE_TARGET,
+        1.0,
+    )
+
+    score = consistency * evidence_coverage
+    return round(score, 3)
+
+
 def evaluate_claim(
     claim: dict[str, Any],
     evidence: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Return a claim with its evidence-based verdict attached."""
+    """Return a claim with its verdict and confidence score attached."""
     if not isinstance(claim, dict):
         raise TypeError("claim must be a dictionary")
 
@@ -72,6 +111,13 @@ def evaluate_claim(
     if not isinstance(claim_text, str) or not claim_text.strip():
         raise ValueError("claim must contain non-empty text")
 
+    # Validate once before producing the result.
+    assessments = _validate_evidence(evidence)
+
     result = dict(claim)
     result["verdict"] = assign_verdict(evidence)
+    result["confidence_score"] = calculate_confidence_score(
+        [{"assessment": assessment} for assessment in assessments]
+    )
+
     return result
