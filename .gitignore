@@ -5,3 +5,4 @@ __pycache__/
 *.py[cod]
 .env
 audit_trail.db
+verification_reports.db

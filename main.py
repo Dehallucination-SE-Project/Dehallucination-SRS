@@ -1,3 +1,5 @@
+from report_store import ReportStore
+from verification_report import generate_verification_report
 from audit_trail import AuditTrail
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -5,6 +7,10 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
+
+class ReportCreateRequest(BaseModel):
+    claims: list[dict[str, Any]]
+    risk_summary: dict[str, Any] | None = None
 
 from evidence_adapters import (
     EvidenceSource,
@@ -21,6 +27,7 @@ app = FastAPI(
 
 # No real external evidence source is configured by default.
 # Tests or future configuration can supply a different adapter.
+report_store = ReportStore()
 evidence_source: EvidenceSource = UnavailableEvidenceAdapter()
 audit_trail = AuditTrail()
 
@@ -122,3 +129,39 @@ def verify_request(request: VerifyRequest):
         status="accepted",
         input_text=request.input_text,
     )
+
+@app.post("/api/v1/reports/{request_id}", status_code=201)
+def create_report(
+    request_id: str,
+    request: ReportCreateRequest,
+):
+    """Generate and persist a report from supplied pipeline results."""
+    try:
+        report = generate_verification_report(
+            claims=request.claims,
+            risk_summary=request.risk_summary,
+        )
+        saved_report = report_store.save_report(request_id, report)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (TypeError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return saved_report
+
+
+@app.get("/api/v1/reports/{request_id}")
+def retrieve_report(request_id: str):
+    """Retrieve a previously saved verification report by request ID."""
+    try:
+        report = report_store.get_report(request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Verification report not found",
+        )
+
+    return report
