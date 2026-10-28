@@ -5,7 +5,7 @@ This baseline uses verdicts and evidence supplied by the existing
 verification pipeline. It does not independently establish factual truth
 or generate unsupported replacement facts.
 """
-
+from evidence_citations import build_evidence_citations
 from typing import Any
 
 
@@ -72,14 +72,17 @@ def generate_grounded_response(
             "message": "Grounded response generation is disabled.",
         }
 
+    
     included_claims = []
     excluded_claims = []
-    citations = []
-    seen_citations = set()
+    supported_claims_for_citations = []
 
     for index, claim in enumerate(claims, start=1):
         claim_id = claim.get("claim_id", f"C-{index:03d}")
-        text = claim.get("normalized_text", claim.get("text")).strip()
+        text = claim.get(
+            "normalized_text",
+            claim.get("text"),
+        ).strip()
         verdict = claim["verdict"]
 
         if verdict != "Supported":
@@ -98,27 +101,34 @@ def generate_grounded_response(
             "text": text,
         })
 
-        for item in claim.get("evidence", []):
-            source_id = item.get("source_id")
-            label = item.get("label")
+        # Pass only supported claims to the citation module.
+        supported_claim = dict(claim)
+        supported_claim["claim_id"] = claim_id
+        supported_claims_for_citations.append(supported_claim)
 
-            # Do not fabricate source references.
-            if not source_id and not label:
+    # The helper returns citations grouped by claim.
+    grouped_citations = build_evidence_citations(
+        supported_claims_for_citations
+    )
+
+    # Preserve the existing flat response format and remove duplicates
+    # across different claims as well.
+    citations = []
+    seen_citations = set()
+
+    for group in grouped_citations:
+        for citation in group["citations"]:
+            key = tuple(
+                (field, repr(citation[field]))
+                for field in sorted(citation)
+            )
+
+            if key in seen_citations:
                 continue
 
-            citation_key = (source_id, label)
-            if citation_key in seen_citations:
-                continue
-
-            seen_citations.add(citation_key)
-            citation = {}
-
-            if source_id:
-                citation["source_id"] = source_id
-            if label:
-                citation["label"] = label
-
+            seen_citations.add(key)
             citations.append(citation)
+
 
     if included_claims:
         response_text = " ".join(
