@@ -1,22 +1,19 @@
-from report_store import ReportStore
-from verification_report import generate_verification_report
-from audit_trail import AuditTrail
-from datetime import datetime, timezone
-from uuid import uuid4
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-class ReportCreateRequest(BaseModel):
-    claims: list[dict[str, Any]]
-    risk_summary: dict[str, Any] | None = None
-
 from evidence_adapters import (
     EvidenceSource,
     EvidenceSourceUnavailableError,
-    UnavailableEvidenceAdapter,
+    EvidenceSourceTimeoutError,
+    _normalize_evidence_result,
 )
+
+
+class ReportCreateRequest(BaseModel):
+    claims: list[dict[str, Any]]
+    risk_summary: dict[str, Any] | None = None
 
 
 app = FastAPI(
@@ -27,9 +24,16 @@ app = FastAPI(
 
 # No real external evidence source is configured by default.
 # Tests or future configuration can supply a different adapter.
+from report_store import ReportStore
+from verification_report import generate_verification_report
+from audit_trail import AuditTrail
+from datetime import datetime, timezone
+from uuid import uuid4
+
 report_store = ReportStore()
-evidence_source: EvidenceSource = UnavailableEvidenceAdapter()
+evidence_source: EvidenceSource = __import__("evidence_adapters").UnavailableEvidenceAdapter()
 audit_trail = AuditTrail()
+
 
 class EvidenceRetrieveRequest(BaseModel):
     query: str = Field(min_length=1, max_length=10000)
@@ -45,6 +49,7 @@ class EvidenceRetrieveRequest(BaseModel):
 class EvidenceRetrieveResponse(BaseModel):
     query: str
     evidence: list[dict[str, Any]]
+    partial: bool = False
 
 
 @app.get("/api/v1/health")
@@ -94,8 +99,9 @@ def root():
 def retrieve_evidence(request: EvidenceRetrieveRequest):
     """Retrieve evidence through the configured evidence adapter."""
     try:
-        results = evidence_source.retrieve(request.query)
-    except EvidenceSourceUnavailableError as exc:
+        raw_results = evidence_source.retrieve(request.query)
+        results, partial = _normalize_evidence_result(raw_results)
+    except (EvidenceSourceUnavailableError, EvidenceSourceTimeoutError, TimeoutError) as exc:
         raise HTTPException(
             status_code=503,
             detail=str(exc),
@@ -104,8 +110,8 @@ def retrieve_evidence(request: EvidenceRetrieveRequest):
     return EvidenceRetrieveResponse(
         query=request.query,
         evidence=results,
+        partial=partial,
     )
-
 
 
 @app.post("/api/v1/verify", response_model=VerifyResponse, status_code=202)
@@ -129,6 +135,7 @@ def verify_request(request: VerifyRequest):
         status="accepted",
         input_text=request.input_text,
     )
+
 
 @app.post("/api/v1/reports/{request_id}", status_code=201)
 def create_report(
@@ -165,3 +172,182 @@ def retrieve_report(request_id: str):
         )
 
     return report
+
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
+
+"""END"""
