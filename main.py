@@ -17,6 +17,11 @@ from evidence_adapters import (
     EvidenceSourceUnavailableError,
     UnavailableEvidenceAdapter,
 )
+from resilience import (
+    EvidenceRetrievalTimeoutError,
+    retrieve_queries_independently,
+    retrieve_with_timeout,
+)
 
 
 app = FastAPI(
@@ -25,11 +30,16 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Configurable default for the current prototype. Network-backed adapters should
+# additionally set native connect/read timeouts for their underlying clients.
+EVIDENCE_RETRIEVAL_TIMEOUT_SECONDS = 2.0
+
 # No real external evidence source is configured by default.
 # Tests or future configuration can supply a different adapter.
 report_store = ReportStore()
 evidence_source: EvidenceSource = UnavailableEvidenceAdapter()
 audit_trail = AuditTrail()
+
 
 class EvidenceRetrieveRequest(BaseModel):
     query: str = Field(min_length=1, max_length=10000)
@@ -40,6 +50,17 @@ class EvidenceRetrieveRequest(BaseModel):
         if not value.strip():
             raise ValueError("query must not be blank")
         return value
+
+
+class EvidenceBatchRetrieveRequest(BaseModel):
+    queries: list[str] = Field(min_length=1, max_length=100)
+
+    @field_validator("queries")
+    @classmethod
+    def queries_must_not_be_blank(cls, values: list[str]) -> list[str]:
+        if any(not query.strip() for query in values):
+            raise ValueError("queries must not contain blank queries")
+        return values
 
 
 class EvidenceRetrieveResponse(BaseModel):
@@ -92,20 +113,34 @@ def root():
     response_model=EvidenceRetrieveResponse,
 )
 def retrieve_evidence(request: EvidenceRetrieveRequest):
-    """Retrieve evidence through the configured evidence adapter."""
+    """Retrieve evidence with a bounded wait and explicit dependency errors."""
     try:
-        results = evidence_source.retrieve(request.query)
+        results = retrieve_with_timeout(
+            evidence_source,
+            request.query,
+            timeout_seconds=EVIDENCE_RETRIEVAL_TIMEOUT_SECONDS,
+        )
+    except EvidenceRetrievalTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except EvidenceSourceUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
         raise HTTPException(
-            status_code=503,
-            detail=str(exc),
+            status_code=502,
+            detail="Evidence retrieval failed",
         ) from exc
 
-    return EvidenceRetrieveResponse(
-        query=request.query,
-        evidence=results,
-    )
+    return EvidenceRetrieveResponse(query=request.query, evidence=results)
 
+
+@app.post("/api/v1/evidence/retrieve/batch")
+def retrieve_evidence_batch(request: EvidenceBatchRetrieveRequest):
+    """Retrieve multiple queries independently, returning successful partial results."""
+    return retrieve_queries_independently(
+        evidence_source,
+        request.queries,
+        timeout_seconds=EVIDENCE_RETRIEVAL_TIMEOUT_SECONDS,
+    )
 
 
 @app.post("/api/v1/verify", response_model=VerifyResponse, status_code=202)
@@ -129,6 +164,7 @@ def verify_request(request: VerifyRequest):
         status="accepted",
         input_text=request.input_text,
     )
+
 
 @app.post("/api/v1/reports/{request_id}", status_code=201)
 def create_report(
