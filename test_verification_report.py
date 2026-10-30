@@ -1,8 +1,5 @@
-
 import pytest
-
 from verification_report import generate_verification_report
-
 
 def test_report_contains_claims_verdicts_and_summary():
     report = generate_verification_report([
