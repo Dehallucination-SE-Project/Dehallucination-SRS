@@ -5,12 +5,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
-
-class ReportCreateRequest(BaseModel):
-    claims: list[dict[str, Any]]
-    risk_summary: dict[str, Any] | None = None
 
 from evidence_adapters import (
     EvidenceSource,
@@ -22,6 +18,31 @@ from resilience import (
     retrieve_queries_independently,
     retrieve_with_timeout,
 )
+from review_queue import (
+    ReviewAlreadyCompletedError,
+    ReviewNotFoundError,
+    ReviewQueue,
+)
+from service_status import build_service_status
+
+
+class ReportCreateRequest(BaseModel):
+    claims: list[dict[str, Any]]
+    risk_summary: dict[str, Any] | None = None
+    review_required: bool = False
+
+
+class ReviewDecisionRequest(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+    reviewer: str = Field(min_length=1, max_length=128)
+    comment: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reviewer")
+    @classmethod
+    def reviewer_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reviewer must not be blank")
+        return value.strip()
 
 
 app = FastAPI(
@@ -39,6 +60,7 @@ EVIDENCE_RETRIEVAL_TIMEOUT_SECONDS = 2.0
 report_store = ReportStore()
 evidence_source: EvidenceSource = UnavailableEvidenceAdapter()
 audit_trail = AuditTrail()
+review_queue = ReviewQueue()
 
 
 class EvidenceRetrieveRequest(BaseModel):
@@ -70,15 +92,21 @@ class EvidenceRetrieveResponse(BaseModel):
 
 @app.get("/api/v1/health")
 def health_check():
-    """Report API health and external evidence-source configuration."""
-    return {
-        "status": "ok",
-        "service": "dehallucination-api",
-        "version": app.version,
-        "dependencies": {
-            "evidence_sources": "not_configured"
-        },
-    }
+    """Return liveness plus detailed status for core and external dependencies."""
+    return build_service_status(
+        app_name="dehallucination-api",
+        version=app.version,
+        report_store=report_store,
+        audit_trail=audit_trail,
+        review_queue=review_queue,
+        evidence_source=evidence_source,
+    )
+
+
+@app.get("/api/v1/status")
+def service_status():
+    """Alias for the detailed service/dependency status document."""
+    return health_check()
 
 
 class VerifyRequest(BaseModel):
@@ -101,6 +129,7 @@ class VerifyResponse(BaseModel):
     created_at: datetime
     status: str
     input_text: str
+    review_required: bool = False
 
 
 @app.get("/")
@@ -145,9 +174,10 @@ def retrieve_evidence_batch(request: EvidenceBatchRetrieveRequest):
 
 @app.post("/api/v1/verify", response_model=VerifyResponse, status_code=202)
 def verify_request(request: VerifyRequest):
-    """Accept a verification request and record its audit event."""
+    """Accept a verification request and expose whether it requires human review."""
     request_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
+    review_required = request.verification_mode == "review-required"
 
     audit_trail.record_request_accepted(
         request_id=request_id,
@@ -155,6 +185,7 @@ def verify_request(request: VerifyRequest):
             "input_length": len(request.input_text),
             "verification_mode": request.verification_mode,
             "domain": request.domain,
+            "review_required": review_required,
         },
     )
 
@@ -163,6 +194,7 @@ def verify_request(request: VerifyRequest):
         created_at=created_at,
         status="accepted",
         input_text=request.input_text,
+        review_required=review_required,
     )
 
 
@@ -171,13 +203,21 @@ def create_report(
     request_id: str,
     request: ReportCreateRequest,
 ):
-    """Generate and persist a report from supplied pipeline results."""
+    """Generate and persist a report; optionally place it in the review queue."""
     try:
         report = generate_verification_report(
             claims=request.claims,
             risk_summary=request.risk_summary,
         )
         saved_report = report_store.save_report(request_id, report)
+        if request.review_required:
+            review_item = review_queue.add_pending(request_id)
+            saved_report["review"] = review_item
+            audit_trail.record_event(
+                request_id=request_id,
+                action="review_requested",
+                details={"status": "pending"},
+            )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (TypeError, OverflowError) as exc:
@@ -188,7 +228,7 @@ def create_report(
 
 @app.get("/api/v1/reports/{request_id}")
 def retrieve_report(request_id: str):
-    """Retrieve a previously saved verification report by request ID."""
+    """Retrieve a saved report and any associated human-review state."""
     try:
         report = report_store.get_report(request_id)
     except ValueError as exc:
@@ -200,4 +240,55 @@ def retrieve_report(request_id: str):
             detail="Verification report not found",
         )
 
+    review_item = review_queue.get(request_id)
+    if review_item is not None:
+        report["review"] = review_item
     return report
+
+
+@app.get("/api/v1/reviews/pending")
+def list_pending_reviews(limit: int = Query(default=100, ge=1, le=500)):
+    """List reports awaiting human review, including report payloads."""
+    items = review_queue.list_pending(limit=limit)
+    for item in items:
+        item["report"] = report_store.get_report(item["request_id"])
+    return {"count": len(items), "items": items}
+
+
+@app.get("/api/v1/reviews/{request_id}")
+def get_review(request_id: str):
+    """Get review state and the associated verification report."""
+    try:
+        item = review_queue.get(request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    item["report"] = report_store.get_report(request_id)
+    return item
+
+
+@app.post("/api/v1/reviews/{request_id}")
+def decide_review(request_id: str, request: ReviewDecisionRequest):
+    """Record an approve/reject decision for a pending report review."""
+    try:
+        item = review_queue.record_decision(
+            request_id,
+            decision=request.decision,
+            reviewer=request.reviewer,
+            comment=request.comment,
+        )
+    except ReviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ReviewAlreadyCompletedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    audit_trail.record_event(
+        request_id=request_id,
+        action="review_decision",
+        actor=request.reviewer,
+        details={"decision": request.decision, "comment": request.comment},
+    )
+    return item
