@@ -8,8 +8,7 @@ Their details include `outcome: success` and the approved or rejected decision.
 Failed review requests do not change review state and do not create a
 `review_decision` event.
 
-The current API has no source-configuration administration endpoints, so this
-change does not add or audit configuration operations. The reviewer value is
-currently supplied in the request body. Until authentication is restored, that
-value is not a verified identity and must not be treated as proof of who made
-the decision.
+Review decisions use the authenticated principal as the audit actor. The
+request-body reviewer must match that principal, so callers cannot claim another
+reviewer's identity. The current API has no source-configuration administration
+endpoints, so this change does not add or audit configuration operations.

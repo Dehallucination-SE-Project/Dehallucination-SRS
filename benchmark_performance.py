@@ -11,16 +11,19 @@ meets DH-NF-001. Re-run against the full verification workflow when implemented.
 from __future__ import annotations
 
 import gc
+import json
 import math
+import os
+import secrets
 import statistics
 import tempfile
 import time
 from pathlib import Path
-from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 import main
+from audit_trail import AuditTrail
 from report_store import ReportStore
 
 
@@ -57,19 +60,44 @@ def make_claims(count: int) -> list[dict]:
 def main_benchmark() -> int:
     timings: list[float] = []
     original_store = main.report_store
+    original_audit_trail = main.audit_trail
+    original_credentials = os.environ.get("DEHALLUCINATION_API_CREDENTIALS")
+    benchmark_token = secrets.token_urlsafe(32)
 
-    # Isolate benchmark writes from the project's normal report database.
-    with tempfile.TemporaryDirectory(
-        prefix="dh086-benchmark-", ignore_cleanup_errors=True
-    ) as temp_dir:
-        main.report_store = ReportStore(Path(temp_dir) / "benchmark.sqlite3")
-        client = TestClient(main.app)
-        claims = make_claims(CLAIM_COUNT)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="dh086-benchmark-", ignore_cleanup_errors=True
+        ) as temp_dir:
+            temp_path = Path(temp_dir)
+            main.report_store = ReportStore(temp_path / "benchmark.sqlite3")
+            main.audit_trail = AuditTrail(temp_path / "audit.sqlite3")
+            os.environ["DEHALLUCINATION_API_CREDENTIALS"] = json.dumps([
+                {
+                    "token": benchmark_token,
+                    "subject": "dh086-benchmark",
+                    "role": "application_developer",
+                }
+            ])
+            client = TestClient(
+                main.app,
+                headers={"Authorization": f"Bearer {benchmark_token}"},
+            )
+            claims = make_claims(CLAIM_COUNT)
 
-        try:
+            def create_request_id() -> str:
+                response = client.post(
+                    "/api/v1/verify",
+                    json={"input_text": "DH-086 performance benchmark request."},
+                )
+                if response.status_code != 202:
+                    raise RuntimeError(
+                        f"Benchmark request failed: {response.status_code} {response.text}"
+                    )
+                return response.json()["request_id"]
+
             # One warm-up request is excluded from the measurements.
             warmup = client.post(
-                f"/api/v1/reports/{uuid4()}",
+                f"/api/v1/reports/{create_request_id()}",
                 json={"claims": claims},
             )
             if warmup.status_code != 201:
@@ -77,9 +105,10 @@ def main_benchmark() -> int:
                 return 1
 
             for _ in range(SAMPLE_COUNT):
+                request_id = create_request_id()
                 started = time.perf_counter()
                 response = client.post(
-                    f"/api/v1/reports/{uuid4()}",
+                    f"/api/v1/reports/{request_id}",
                     json={"claims": claims},
                 )
                 elapsed = time.perf_counter() - started
@@ -88,11 +117,15 @@ def main_benchmark() -> int:
                     print(f"Sample failed: {response.status_code} {response.text}")
                     return 1
                 timings.append(elapsed)
-        finally:
-            main.report_store = original_store
-            # SQLite connections can remain referenced briefly on Windows;
-            # collect released objects before TemporaryDirectory cleanup.
-            gc.collect()
+    finally:
+        main.report_store = original_store
+        main.audit_trail = original_audit_trail
+        if original_credentials is None:
+            os.environ.pop("DEHALLUCINATION_API_CREDENTIALS", None)
+        else:
+            os.environ["DEHALLUCINATION_API_CREDENTIALS"] = original_credentials
+        # SQLite connections can remain referenced briefly on Windows.
+        gc.collect()
 
     p90 = percentile_nearest_rank(timings, 0.90)
     median = statistics.median(timings)

@@ -5,8 +5,12 @@ from uuid import UUID
 from fastapi.testclient import TestClient
 
 from main import app
+from test_support import auth_headers
 
-client = TestClient(app)
+client = TestClient(
+    app,
+    headers=auth_headers("application_developer"),
+)
 
 
 def test_valid_request_is_accepted():
@@ -92,14 +96,16 @@ def test_health_endpoint_returns_service_status():
     assert data["version"] == "0.1.0"
 
 
-def test_health_endpoint_reports_dependency_status():
+def test_health_endpoint_exposes_liveness_without_dependency_details():
     response = client.get("/api/v1/health")
 
     assert response.status_code == 200
 
-    dependencies = response.json()["dependencies"]
-    assert "evidence_sources" in dependencies
-    assert dependencies["evidence_sources"] == "not_configured"
+    assert response.json() == {
+        "status": "ok",
+        "service": "dehallucination-api",
+        "version": "0.1.0",
+    }
 
 
 def test_evidence_retrieval_returns_503_when_source_unavailable():
