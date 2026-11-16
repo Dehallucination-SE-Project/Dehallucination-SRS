@@ -289,6 +289,10 @@ def decide_review(request_id: str, request: ReviewDecisionRequest):
         request_id=request_id,
         action="review_decision",
         actor=request.reviewer,
-        details={"decision": request.decision, "comment": request.comment},
+        details={
+            "outcome": "success",
+            "decision": request.decision,
+            "comment": request.comment,
+        },
     )
     return item

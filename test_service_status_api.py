@@ -77,9 +77,16 @@ def test_report_review_lifecycle_and_audit(client_with_test_stores):
 
     report = client_with_test_stores.get("/api/v1/reports/request-review-1").json()
     assert report["review"]["reviewer"] == "qa-reviewer"
-    actions = [e["action"] for e in main.audit_trail.get_events("request-review-1")]
+    events = main.audit_trail.get_events("request-review-1")
+    actions = [event["action"] for event in events]
     assert "review_requested" in actions
     assert "review_decision" in actions
+    decision_event = next(
+        event for event in events if event["action"] == "review_decision"
+    )
+    assert decision_event["actor"] == "qa-reviewer"
+    assert decision_event["details"]["outcome"] == "success"
+    assert decision_event["details"]["decision"] == "approved"
 
     duplicate = client_with_test_stores.post(
         "/api/v1/reviews/request-review-1",
