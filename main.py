@@ -5,9 +5,16 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
+from auth import (
+    Permission,
+    Principal,
+    has_permission,
+    require_any_permission,
+    require_permission,
+)
 from evidence_adapters import (
     EvidenceSource,
     EvidenceSourceUnavailableError,
@@ -92,7 +99,21 @@ class EvidenceRetrieveResponse(BaseModel):
 
 @app.get("/api/v1/health")
 def health_check():
-    """Return liveness plus detailed status for core and external dependencies."""
+    """Return a public liveness response without operational details."""
+    return {
+        "status": "ok",
+        "service": "dehallucination-api",
+        "version": app.version,
+    }
+
+
+@app.get("/api/v1/status")
+def service_status(
+    _principal: Principal = Depends(
+        require_permission(Permission.VIEW_SERVICE_STATUS)
+    ),
+):
+    """Alias for the detailed service/dependency status document."""
     return build_service_status(
         app_name="dehallucination-api",
         version=app.version,
@@ -101,12 +122,6 @@ def health_check():
         review_queue=review_queue,
         evidence_source=evidence_source,
     )
-
-
-@app.get("/api/v1/status")
-def service_status():
-    """Alias for the detailed service/dependency status document."""
-    return health_check()
 
 
 class VerifyRequest(BaseModel):
@@ -141,7 +156,12 @@ def root():
     "/api/v1/evidence/retrieve",
     response_model=EvidenceRetrieveResponse,
 )
-def retrieve_evidence(request: EvidenceRetrieveRequest):
+def retrieve_evidence(
+    request: EvidenceRetrieveRequest,
+    _principal: Principal = Depends(
+        require_permission(Permission.RETRIEVE_EVIDENCE)
+    ),
+):
     """Retrieve evidence with a bounded wait and explicit dependency errors."""
     try:
         results = retrieve_with_timeout(
@@ -163,7 +183,12 @@ def retrieve_evidence(request: EvidenceRetrieveRequest):
 
 
 @app.post("/api/v1/evidence/retrieve/batch")
-def retrieve_evidence_batch(request: EvidenceBatchRetrieveRequest):
+def retrieve_evidence_batch(
+    request: EvidenceBatchRetrieveRequest,
+    _principal: Principal = Depends(
+        require_permission(Permission.RETRIEVE_EVIDENCE)
+    ),
+):
     """Retrieve multiple queries independently, returning successful partial results."""
     return retrieve_queries_independently(
         evidence_source,
@@ -173,7 +198,12 @@ def retrieve_evidence_batch(request: EvidenceBatchRetrieveRequest):
 
 
 @app.post("/api/v1/verify", response_model=VerifyResponse, status_code=202)
-def verify_request(request: VerifyRequest):
+def verify_request(
+    request: VerifyRequest,
+    principal: Principal = Depends(
+        require_any_permission(Permission.SUBMIT_VERIFICATION)
+    ),
+):
     """Accept a verification request and expose whether it requires human review."""
     request_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
@@ -181,6 +211,7 @@ def verify_request(request: VerifyRequest):
 
     audit_trail.record_request_accepted(
         request_id=request_id,
+        actor=principal.subject,
         details={
             "input_length": len(request.input_text),
             "verification_mode": request.verification_mode,
@@ -198,24 +229,47 @@ def verify_request(request: VerifyRequest):
     )
 
 
+def _request_is_owned_by(request_id: str, subject: str) -> bool:
+    """Check ownership recorded when a caller's request was accepted."""
+    try:
+        events = audit_trail.get_events(request_id)
+    except ValueError:
+        return False
+    return any(
+        event["action"] == "request_accepted" and event["actor"] == subject
+        for event in events
+    )
+
+
 @app.post("/api/v1/reports/{request_id}", status_code=201)
 def create_report(
     request_id: str,
     request: ReportCreateRequest,
+    principal: Principal = Depends(
+        require_permission(Permission.CREATE_REPORT)
+    ),
 ):
     """Generate and persist a report; optionally place it in the review queue."""
+    if not _request_is_owned_by(request_id, principal.subject):
+        raise HTTPException(status_code=404, detail="Verification request not found")
+
     try:
         report = generate_verification_report(
             claims=request.claims,
             risk_summary=request.risk_summary,
         )
-        saved_report = report_store.save_report(request_id, report)
+        saved_report = report_store.save_report(
+            request_id,
+            report,
+            owner_subject=principal.subject,
+        )
         if request.review_required:
             review_item = review_queue.add_pending(request_id)
             saved_report["review"] = review_item
             audit_trail.record_event(
                 request_id=request_id,
                 action="review_requested",
+                actor=principal.subject,
                 details={"status": "pending"},
             )
     except ValueError as exc:
@@ -227,7 +281,15 @@ def create_report(
 
 
 @app.get("/api/v1/reports/{request_id}")
-def retrieve_report(request_id: str):
+def retrieve_report(
+    request_id: str,
+    principal: Principal = Depends(
+        require_any_permission(
+            Permission.READ_OWN_REPORT,
+            Permission.READ_ANY_REPORT,
+        )
+    ),
+):
     """Retrieve a saved report and any associated human-review state."""
     try:
         report = report_store.get_report(request_id)
@@ -240,6 +302,15 @@ def retrieve_report(request_id: str):
             detail="Verification report not found",
         )
 
+    if (
+        not has_permission(principal, Permission.READ_ANY_REPORT)
+        and report_store.get_report_owner(request_id) != principal.subject
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail="Verification report not found",
+        )
+
     review_item = review_queue.get(request_id)
     if review_item is not None:
         report["review"] = review_item
@@ -247,7 +318,12 @@ def retrieve_report(request_id: str):
 
 
 @app.get("/api/v1/reviews/pending")
-def list_pending_reviews(limit: int = Query(default=100, ge=1, le=500)):
+def list_pending_reviews(
+    limit: int = Query(default=100, ge=1, le=500),
+    _principal: Principal = Depends(
+        require_permission(Permission.REVIEW_REPORTS)
+    ),
+):
     """List reports awaiting human review, including report payloads."""
     items = review_queue.list_pending(limit=limit)
     for item in items:
@@ -256,7 +332,12 @@ def list_pending_reviews(limit: int = Query(default=100, ge=1, le=500)):
 
 
 @app.get("/api/v1/reviews/{request_id}")
-def get_review(request_id: str):
+def get_review(
+    request_id: str,
+    _principal: Principal = Depends(
+        require_permission(Permission.REVIEW_REPORTS)
+    ),
+):
     """Get review state and the associated verification report."""
     try:
         item = review_queue.get(request_id)
@@ -269,13 +350,25 @@ def get_review(request_id: str):
 
 
 @app.post("/api/v1/reviews/{request_id}")
-def decide_review(request_id: str, request: ReviewDecisionRequest):
+def decide_review(
+    request_id: str,
+    request: ReviewDecisionRequest,
+    principal: Principal = Depends(
+        require_permission(Permission.REVIEW_REPORTS)
+    ),
+):
     """Record an approve/reject decision for a pending report review."""
+    if request.reviewer != principal.subject:
+        raise HTTPException(
+            status_code=403,
+            detail="Reviewer must match the authenticated principal",
+        )
+
     try:
         item = review_queue.record_decision(
             request_id,
             decision=request.decision,
-            reviewer=request.reviewer,
+            reviewer=principal.subject,
             comment=request.comment,
         )
     except ReviewNotFoundError as exc:
@@ -288,7 +381,11 @@ def decide_review(request_id: str, request: ReviewDecisionRequest):
     audit_trail.record_event(
         request_id=request_id,
         action="review_decision",
-        actor=request.reviewer,
-        details={"decision": request.decision, "comment": request.comment},
+        actor=principal.subject,
+        details={
+            "outcome": "success",
+            "decision": request.decision,
+            "comment": request.comment,
+        },
     )
     return item

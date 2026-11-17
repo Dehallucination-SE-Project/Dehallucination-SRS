@@ -162,11 +162,14 @@ class AuditTrail:
         self,
         request_id: str,
         details: dict[str, Any] | None = None,
+        *,
+        actor: str = "system",
     ) -> dict[str, Any]:
         """Record that a verification request was accepted."""
         return self.record_event(
             request_id=request_id,
             action="request_accepted",
+            actor=actor,
             details=details,
         )
 

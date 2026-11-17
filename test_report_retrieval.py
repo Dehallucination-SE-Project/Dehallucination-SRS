@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 import main
 from report_store import ReportStore
+from test_support import auth_headers
 
 
 @pytest.fixture
@@ -14,11 +15,23 @@ def client(tmp_path, monkeypatch):
         "report_store",
         ReportStore(tmp_path / "test_reports.db"),
     )
-    return TestClient(main.app)
+    return TestClient(
+        main.app,
+        headers=auth_headers("application_developer"),
+    )
+
+
+def _create_owned_request(client):
+    response = client.post(
+        "/api/v1/verify",
+        json={"input_text": "Request for report ownership testing."},
+    )
+    assert response.status_code == 202
+    return response.json()["request_id"]
 
 
 def test_report_can_be_created_and_retrieved(client):
-    request_id = "request-report-001"
+    request_id = _create_owned_request(client)
 
     payload = {
         "claims": [
@@ -77,7 +90,7 @@ def test_missing_report_returns_404(client):
 
 
 def test_duplicate_report_creation_is_rejected(client):
-    request_id = "request-report-002"
+    request_id = _create_owned_request(client)
     payload = {
         "claims": [],
         "risk_summary": None,
@@ -97,8 +110,9 @@ def test_duplicate_report_creation_is_rejected(client):
 
 
 def test_invalid_verdict_is_rejected(client):
+    request_id = _create_owned_request(client)
     response = client.post(
-        "/api/v1/reports/request-report-003",
+        f"/api/v1/reports/{request_id}",
         json={
             "claims": [
                 {
@@ -114,7 +128,7 @@ def test_invalid_verdict_is_rejected(client):
 
 
 def test_empty_report_can_be_retrieved(client):
-    request_id = "request-report-004"
+    request_id = _create_owned_request(client)
 
     create_response = client.post(
         f"/api/v1/reports/{request_id}",

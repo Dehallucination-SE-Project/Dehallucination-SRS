@@ -31,12 +31,23 @@ class ReportStore:
                 CREATE TABLE IF NOT EXISTS verification_reports (
                     request_id TEXT PRIMARY KEY,
                     report_json TEXT NOT NULL,
+                    owner_subject TEXT,
                     created_at TEXT NOT NULL DEFAULT (
                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                     )
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(verification_reports)"
+                ).fetchall()
+            }
+            if "owner_subject" not in columns:
+                connection.execute(
+                    "ALTER TABLE verification_reports ADD COLUMN owner_subject TEXT"
+                )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -50,6 +61,8 @@ class ReportStore:
         self,
         request_id: str,
         report: dict[str, Any],
+        *,
+        owner_subject: str | None = None,
     ) -> dict[str, Any]:
         """Save a report; reject duplicate request IDs."""
         if not isinstance(request_id, str) or not request_id.strip():
@@ -57,6 +70,10 @@ class ReportStore:
 
         if not isinstance(report, dict):
             raise TypeError("report must be a dictionary")
+        if owner_subject is not None and (
+            not isinstance(owner_subject, str) or not owner_subject.strip()
+        ):
+            raise ValueError("owner_subject must be a non-empty string or None")
 
         try:
             report_json = json.dumps(
@@ -75,11 +92,15 @@ class ReportStore:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO verification_reports (
-                    request_id, report_json
+                    request_id, report_json, owner_subject
                 )
-                VALUES (?, ?)
+                VALUES (?, ?, ?)
                 """,
-                (request_id, report_json),
+                (
+                    request_id,
+                    report_json,
+                    owner_subject.strip() if owner_subject is not None else None,
+                ),
             )
 
             if cursor.rowcount == 0:
@@ -128,3 +149,15 @@ class ReportStore:
             "created_at": row["created_at"],
             "report": json.loads(row["report_json"]),
         }
+
+    def get_report_owner(self, request_id: str) -> str | None:
+        """Return the recorded owner subject for a report, if one exists."""
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise ValueError("request_id must be a non-empty string")
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT owner_subject FROM verification_reports WHERE request_id = ?",
+                (request_id.strip(),),
+            ).fetchone()
+        return row["owner_subject"] if row is not None else None

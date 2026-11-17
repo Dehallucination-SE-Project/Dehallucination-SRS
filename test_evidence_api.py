@@ -8,8 +8,12 @@ from evidence_adapters import (
     UnavailableEvidenceAdapter,
     EvidenceSourceUnavailableError,
 )
+from test_support import auth_headers
 
-client = TestClient(main.app)
+client = TestClient(
+    main.app,
+    headers=auth_headers("application_developer"),
+)
 
 
 def test_retrieve_endpoint_returns_matching_evidence():
@@ -55,10 +59,13 @@ def test_retrieve_endpoint_reports_unavailable_source():
     assert "Test source" in response.json()["detail"]
 
 
-def test_health_still_reports_external_sources_unconfigured():
-    response = client.get("/api/v1/health")
+def test_detailed_status_reports_external_sources_as_admin():
+    response = client.get(
+        "/api/v1/status",
+        headers=auth_headers("administrator"),
+    )
     assert response.status_code == 200
-    assert response.json()["dependencies"]["evidence_sources"] == "not_configured"
+    assert response.json()["components"]["evidence_sources"]["status"] == "not_configured"
 
 
 def test_verify_endpoint_still_accepts_requests():
