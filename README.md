@@ -3,3 +3,16 @@ Software Requirements Specification for Project ID 39 - Dehallucination Add-On M
 
 API operator setup and the approved role-permission policy are documented in
 [AUTHENTICATION.md](AUTHENTICATION.md).
+
+## Configuration and secrets
+
+Set sensitive values through the operating-system or deployment environment, or
+through the deployment platform's secret manager. Do not place credentials,
+API tokens, private keys, or other secret values in source files or commit them
+to this repository.
+
+Local `.env` files and common private-key files are ignored by Git. The
+application does not load `.env` files automatically; use them only with local
+tooling that is explicitly configured to load them. A tracked `.env.example`
+may document variable names, but must contain placeholders rather than real
+values.

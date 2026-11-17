@@ -2,7 +2,18 @@
 __pycache__/
 .pytest_cache/
 *.py[cod]
+
+# Local environment and secret material.
 .env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local application data.
 audit_trail.db
 verification_reports.db
 review_queue.db
