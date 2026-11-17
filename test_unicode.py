@@ -7,6 +7,7 @@ import main
 from audit_trail import AuditTrail
 from report_store import ReportStore
 from review_queue import ReviewQueue
+from test_support import auth_headers
 
 
 MULTILINGUAL_TEXT = "Café — नमस्ते — こんにちは — مرحبًا — 你好 — 😀"
@@ -30,7 +31,10 @@ def unicode_client(tmp_path, monkeypatch):
         "review_queue",
         ReviewQueue(tmp_path / "unicode-reviews.db"),
     )
-    return TestClient(main.app)
+    return TestClient(
+        main.app,
+        headers=auth_headers("application_developer"),
+    )
 
 
 def test_verify_api_round_trips_multilingual_input(unicode_client):
@@ -48,7 +52,12 @@ def test_verify_api_round_trips_multilingual_input(unicode_client):
 def test_report_api_round_trips_multilingual_content_through_sqlite(
     unicode_client,
 ):
-    request_id = "unicode-report-001"
+    accepted = unicode_client.post(
+        "/api/v1/verify",
+        json={"input_text": MULTILINGUAL_TEXT},
+    )
+    assert accepted.status_code == 202
+    request_id = accepted.json()["request_id"]
     payload = {
         "claims": [
             {
