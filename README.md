@@ -16,3 +16,6 @@ application does not load `.env` files automatically; use them only with local
 tooling that is explicitly configured to load them. A tracked `.env.example`
 may document variable names, but must contain placeholders rather than real
 values.
+
+ARCHITECTURE:
+<img width="411" height="931" alt="image" src="https://github.com/user-attachments/assets/e2606331-2b20-43b0-9feb-80d8e5d91b4e" />
