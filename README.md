@@ -23,3 +23,4 @@ ARCHITECTURE:
 
 
 classification : supports, contradicts, insufficient
+<img width="1118" height="407" alt="image" src="https://github.com/user-attachments/assets/e5805f17-4faf-43af-b023-9151065608c1" />
